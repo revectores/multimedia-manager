@@ -146,9 +146,11 @@ def normalize_entry(entry):
         "overview": str(entry.get("overview") or "暂无简介"),
         "posterPath": str(entry.get("posterPath") or ""),
         "country": str(entry.get("country") or "未知"),
+        "countryCodes": [str(code) for code in entry.get("countryCodes", []) if code],
         "releaseYear": str(entry.get("releaseYear") or "未知"),
         "runtimeMinutes": int(entry.get("runtimeMinutes") or 0),
         "genres": [str(item) for item in entry.get("genres", []) if item],
+        "metadataLanguage": str(entry.get("metadataLanguage") or "default"),
         "createdAt": str(entry.get("createdAt") or iso_now()),
     }
 
@@ -204,13 +206,14 @@ def normalize_seasons(seasons):
     return normalized
 
 
-def tmdb_request(path, params=None):
+def tmdb_request(path, params=None, language="zh-CN"):
     token = get_tmdb_token()
     if not token:
         raise ValueError("请先设置 TMDB_TOKEN 环境变量。")
 
     query = params or {}
-    query["language"] = "zh-CN"
+    if language:
+        query["language"] = language
     url = f"{TMDB_BASE}{path}?{parse.urlencode(query)}"
     req = request.Request(
         url,
@@ -231,8 +234,79 @@ def tmdb_request(path, params=None):
         raise ValueError("无法连接 TMDB，请检查网络。") from exc
 
 
-def build_movie_entry(tmdb_id):
-    detail = tmdb_request(f"/movie/{tmdb_id}")
+def enrich_search_results_with_original_language(results, fallback_media_type=""):
+    enriched = []
+    for item in results:
+        media_type = item.get("media_type") or fallback_media_type
+        if media_type not in {"movie", "tv"}:
+          continue
+
+        original_language = normalize_tmdb_language(item.get("original_language"))
+        if not original_language:
+            enriched.append(item)
+            continue
+
+        try:
+            detail = tmdb_request(f"/{media_type}/{item['id']}", language=original_language)
+        except ValueError:
+            enriched.append(item)
+            continue
+
+        enriched_item = dict(item)
+        if media_type == "movie":
+            enriched_item["title"] = detail.get("title") or item.get("title") or item.get("original_title")
+            enriched_item["overview"] = detail.get("overview") or item.get("overview") or ""
+        else:
+            enriched_item["name"] = detail.get("name") or item.get("name") or item.get("original_name")
+            enriched_item["overview"] = detail.get("overview") or item.get("overview") or ""
+        enriched.append(enriched_item)
+
+    return enriched
+
+
+def normalize_tmdb_language(language):
+    value = str(language or "").strip().lower()
+    return {
+        "zh": "zh-CN",
+        "en": "en-US",
+        "ja": "ja-JP",
+        "ko": "ko-KR",
+        "fr": "fr-FR",
+        "de": "de-DE",
+        "es": "es-ES",
+        "pt": "pt-PT",
+        "it": "it-IT",
+    }.get(value, value)
+
+
+def find_exact_match(title):
+    payload = tmdb_request("/search/multi", {"query": title}, language=None)
+    for item in payload.get("results", []):
+        media_type = item.get("media_type")
+        if media_type not in {"movie", "tv"}:
+            continue
+
+        candidates = {
+            str(item.get("title") or ""),
+            str(item.get("original_title") or ""),
+            str(item.get("name") or ""),
+            str(item.get("original_name") or ""),
+        }
+        if title in candidates:
+            return item
+    return None
+
+
+def find_fuzzy_match(title):
+    payload = tmdb_request("/search/multi", {"query": title}, language=None)
+    for item in payload.get("results", []):
+        if item.get("media_type") in {"movie", "tv"}:
+            return item
+    return None
+
+
+def build_movie_entry(tmdb_id, language):
+    detail = tmdb_request(f"/movie/{tmdb_id}", language=language)
     return {
         "id": str(uuid.uuid4()),
         "tmdbId": detail["id"],
@@ -241,9 +315,15 @@ def build_movie_entry(tmdb_id):
         "overview": detail.get("overview") or "暂无简介",
         "posterPath": detail.get("poster_path") or "",
         "country": format_movie_countries(detail.get("production_countries", [])),
+        "countryCodes": [
+            item.get("iso_3166_1")
+            for item in detail.get("production_countries", [])
+            if item.get("iso_3166_1")
+        ],
         "releaseYear": extract_year(detail.get("release_date")),
         "runtimeMinutes": detail.get("runtime") or 0,
         "genres": [genre["name"] for genre in detail.get("genres", [])],
+        "metadataLanguage": language or "default",
         "progress": {
             "status": "planned",
             "percent": 0,
@@ -253,8 +333,8 @@ def build_movie_entry(tmdb_id):
     }
 
 
-def build_tv_entry(tmdb_id):
-    detail = tmdb_request(f"/tv/{tmdb_id}")
+def build_tv_entry(tmdb_id, language):
+    detail = tmdb_request(f"/tv/{tmdb_id}", language=language)
     seasons = []
     episode_runtime = (detail.get("episode_run_time") or [0])[0] or 0
 
@@ -262,7 +342,9 @@ def build_tv_entry(tmdb_id):
         season_number = season_meta.get("season_number", 0)
         if season_number <= 0:
             continue
-        season_detail = tmdb_request(f"/tv/{tmdb_id}/season/{season_number}")
+        season_detail = tmdb_request(
+            f"/tv/{tmdb_id}/season/{season_number}", language=language
+        )
         episodes = []
         for episode in season_detail.get("episodes", []):
             episodes.append(
@@ -291,9 +373,11 @@ def build_tv_entry(tmdb_id):
         "overview": detail.get("overview") or "暂无简介",
         "posterPath": detail.get("poster_path") or "",
         "country": format_region_codes(detail.get("origin_country", [])),
+        "countryCodes": [code for code in detail.get("origin_country", []) if code],
         "releaseYear": extract_year(detail.get("first_air_date")),
         "runtimeMinutes": episode_runtime,
         "genres": [genre["name"] for genre in detail.get("genres", [])],
+        "metadataLanguage": language or "default",
         "progress": {"status": "planned"},
         "status": "planned",
         "seasons": seasons,
@@ -437,16 +521,73 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/search":
             params = parse.parse_qs(parsed.query)
-            media_type = (params.get("mediaType") or ["movie"])[0]
+            media_type = (params.get("mediaType") or ["all"])[0]
             query = (params.get("query") or [""])[0].strip()
-            if media_type not in {"movie", "tv"} or not query:
+            language = (params.get("language") or [""])[0].strip()
+            if media_type not in {"all", "movie", "tv"} or not query:
                 return self.send_json({"error": "搜索参数无效。"}, status=HTTPStatus.BAD_REQUEST)
-            payload = tmdb_request(f"/search/{media_type}", {"query": query})
-            return self.send_json(payload.get("results", []))
+            search_path = "/search/multi" if media_type == "all" else f"/search/{media_type}"
+            payload = tmdb_request(search_path, {"query": query}, language=language or None)
+            results = payload.get("results", [])
+            if media_type == "all":
+                results = [item for item in results if item.get("media_type") in {"movie", "tv"}]
+            if not language:
+                results = enrich_search_results_with_original_language(results, media_type)
+            return self.send_json(results)
 
         return self.send_json({"error": "未找到接口。"}, status=HTTPStatus.NOT_FOUND)
 
     def handle_api_post(self):
+        if self.path == "/api/bulk-import-item":
+            payload = self.read_json()
+            title = str(payload.get("title") or "").strip()
+            mode = str(payload.get("mode") or "exact").strip()
+            if not title:
+                return self.send_json({"error": "标题不能为空。"}, status=HTTPStatus.BAD_REQUEST)
+            if mode not in {"exact", "fuzzy"}:
+                return self.send_json({"error": "匹配模式无效。"}, status=HTTPStatus.BAD_REQUEST)
+
+            item = find_exact_match(title) if mode == "exact" else find_fuzzy_match(title)
+            if not item:
+                return self.send_json({"status": "not_found", "title": title})
+
+            media_type = item.get("media_type")
+            tmdb_id = item.get("id")
+            existing = next(
+                (
+                    entry
+                    for entry in load_entries()
+                    if entry["mediaType"] == media_type and entry["tmdbId"] == tmdb_id
+                ),
+                None,
+            )
+            if existing:
+                return self.send_json(
+                    {
+                        "status": "already_exists",
+                        "title": title,
+                        "mediaType": media_type,
+                        "matchedTitle": existing["title"],
+                    }
+                )
+
+            language = normalize_tmdb_language(item.get("original_language"))
+            entry = (
+                build_movie_entry(tmdb_id, language)
+                if media_type == "movie"
+                else build_tv_entry(tmdb_id, language)
+            )
+            save_entry(entry)
+            return self.send_json(
+                {
+                    "status": "imported",
+                    "title": title,
+                    "mediaType": media_type,
+                    "matchedTitle": entry["title"],
+                },
+                status=HTTPStatus.CREATED,
+            )
+
         if self.path == "/api/import":
             try:
                 import_snapshot(self.read_json())
@@ -460,6 +601,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         payload = self.read_json()
         media_type = payload.get("mediaType")
         tmdb_id = payload.get("tmdbId")
+        language = str(payload.get("language") or "").strip() or None
         if media_type not in {"movie", "tv"} or not tmdb_id:
             return self.send_json({"error": "新增参数无效。"}, status=HTTPStatus.BAD_REQUEST)
 
@@ -474,7 +616,11 @@ class AppHandler(SimpleHTTPRequestHandler):
         if existing:
             return self.send_json({"error": "这个条目已经在片单里。"}, status=HTTPStatus.CONFLICT)
 
-        entry = build_movie_entry(tmdb_id) if media_type == "movie" else build_tv_entry(tmdb_id)
+        entry = (
+            build_movie_entry(tmdb_id, language)
+            if media_type == "movie"
+            else build_tv_entry(tmdb_id, language)
+        )
         return self.send_json(save_entry(entry), status=HTTPStatus.CREATED)
 
     def handle_api_patch(self):

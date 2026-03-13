@@ -1,16 +1,28 @@
+const STORAGE_KEYS = {
+  metadataLanguage: "metadata_language_preference",
+  libraryViewMode: "library_view_mode",
+};
+
 const state = {
-  mediaType: "movie",
+  mediaType: "all",
   entries: [],
   hasToken: false,
   tokenSource: "missing",
+  metadataLanguage: localStorage.getItem(STORAGE_KEYS.metadataLanguage) || "zh-CN",
+  viewMode: localStorage.getItem(STORAGE_KEYS.libraryViewMode) || "detailed",
+  expandedEntries: new Set(),
   filters: {
+    title: "",
     type: "all",
+    country: "all",
     status: "all",
   },
 };
 
 const els = {
   tokenStatus: document.querySelector("#tokenStatus"),
+  languagePreference: document.querySelector("#languagePreference"),
+  languageHelp: document.querySelector("#languageHelp"),
   exportJsonBtn: document.querySelector("#exportJsonBtn"),
   importJsonBtn: document.querySelector("#importJsonBtn"),
   importJsonInput: document.querySelector("#importJsonInput"),
@@ -20,8 +32,11 @@ const els = {
   searchMessage: document.querySelector("#searchMessage"),
   libraryList: document.querySelector("#libraryList"),
   libraryStats: document.querySelector("#libraryStats"),
+  titleFilter: document.querySelector("#titleFilter"),
   typeFilter: document.querySelector("#typeFilter"),
+  countryFilter: document.querySelector("#countryFilter"),
   statusFilter: document.querySelector("#statusFilter"),
+  viewMode: document.querySelector("#viewMode"),
   resultCardTemplate: document.querySelector("#resultCardTemplate"),
   libraryCardTemplate: document.querySelector("#libraryCardTemplate"),
   segmentButtons: Array.from(document.querySelectorAll(".segment")),
@@ -33,6 +48,9 @@ bootstrap();
 
 async function bootstrap() {
   bindEvents();
+  els.languagePreference.value = state.metadataLanguage;
+  els.viewMode.value = state.viewMode;
+  updateLanguageHelp();
 
   try {
     applySettings(await apiGet("/api/settings"));
@@ -44,16 +62,34 @@ async function bootstrap() {
 }
 
 function bindEvents() {
+  els.languagePreference.addEventListener("change", (event) => {
+    state.metadataLanguage = event.target.value;
+    localStorage.setItem(STORAGE_KEYS.metadataLanguage, state.metadataLanguage);
+    updateLanguageHelp();
+  });
   els.exportJsonBtn.addEventListener("click", exportJson);
   els.importJsonBtn.addEventListener("click", () => els.importJsonInput.click());
   els.importJsonInput.addEventListener("change", importJson);
   els.searchForm.addEventListener("submit", handleSearch);
+  els.titleFilter.addEventListener("input", (event) => {
+    state.filters.title = event.target.value.trim().toLowerCase();
+    renderLibrary();
+  });
   els.typeFilter.addEventListener("change", (event) => {
     state.filters.type = event.target.value;
     renderLibrary();
   });
+  els.countryFilter.addEventListener("change", (event) => {
+    state.filters.country = event.target.value;
+    renderLibrary();
+  });
   els.statusFilter.addEventListener("change", (event) => {
     state.filters.status = event.target.value;
+    renderLibrary();
+  });
+  els.viewMode.addEventListener("change", (event) => {
+    state.viewMode = event.target.value;
+    localStorage.setItem(STORAGE_KEYS.libraryViewMode, state.viewMode);
     renderLibrary();
   });
 
@@ -62,7 +98,11 @@ function bindEvents() {
       state.mediaType = button.dataset.mediaType;
       els.segmentButtons.forEach((item) => item.classList.toggle("active", item === button));
       els.searchInput.placeholder =
-        state.mediaType === "movie" ? "输入电影名搜索" : "输入剧名搜索";
+        state.mediaType === "movie"
+          ? "输入电影名搜索"
+          : state.mediaType === "tv"
+            ? "输入剧名搜索"
+            : "输入片名或剧名搜索";
       els.searchResults.innerHTML = "";
       setSearchMessage("");
     });
@@ -72,6 +112,7 @@ function bindEvents() {
 async function refreshLibrary() {
   try {
     state.entries = await apiGet("/api/entries");
+    updateCountryFilterOptions();
     renderLibrary();
   } catch (error) {
     els.libraryList.innerHTML = `<div class="empty-state">${error.message || "加载片单失败。"}</div>`;
@@ -134,7 +175,9 @@ async function handleSearch(event) {
 
   try {
     const results = await apiGet(
-      `/api/search?mediaType=${encodeURIComponent(state.mediaType)}&query=${encodeURIComponent(query)}`
+      `/api/search?mediaType=${encodeURIComponent(state.mediaType)}&query=${encodeURIComponent(query)}${buildLanguageQuery(
+        resolveSearchLanguage()
+      )}`
     );
     renderSearchResults(results);
     setSearchMessage(results.length ? "" : "没有找到匹配结果。");
@@ -147,32 +190,49 @@ function renderSearchResults(results) {
   const fragment = document.createDocumentFragment();
 
   results.slice(0, 8).forEach((item) => {
+    const mediaType = resolveSearchItemType(item);
+    if (!mediaType) {
+      return;
+    }
+
     const node = els.resultCardTemplate.content.firstElementChild.cloneNode(true);
-    const title = item.title || item.name;
+    const title = getSearchDisplayTitle(item);
     const releaseDate = item.release_date || item.first_air_date || "";
 
     node.querySelector("img").src = getPosterUrl(item.poster_path);
     node.querySelector("img").alt = title;
     node.querySelector("h3").textContent = title;
-    node.querySelector(".overview").textContent = item.overview || "暂无简介";
+    node.querySelector(".overview").remove();
     node.querySelector(".result-meta").append(
-      createTag(state.mediaType === "movie" ? "电影" : "电视剧", true),
+      createTag(mediaType === "movie" ? "电影" : "电视剧", true),
       createTag(extractYear(releaseDate) || "年份未知")
     );
-    node.querySelector(".add-result-btn").addEventListener("click", () => addEntry(item.id));
+    const addButton = node.querySelector(".add-result-btn");
+    if (hasEntryInLibrary(item.id, mediaType)) {
+      const successPill = document.createElement("div");
+      successPill.className = "success-pill";
+      successPill.textContent = "已在片单里";
+      addButton.replaceWith(successPill);
+    } else {
+      addButton.addEventListener("click", () => addEntry(item.id, mediaType, item));
+    }
     fragment.append(node);
   });
 
   els.searchResults.replaceChildren(fragment);
 }
 
-async function addEntry(tmdbId) {
+async function addEntry(tmdbId, mediaType, item) {
   setSearchMessage("正在拉取详细信息...");
 
   try {
     await apiRequest("/api/entries", {
       method: "POST",
-      body: JSON.stringify({ mediaType: state.mediaType, tmdbId }),
+      body: JSON.stringify({
+        mediaType,
+        tmdbId,
+        language: resolveEntryLanguage(item),
+      }),
     });
     await refreshLibrary();
     setSearchMessage("条目已加入片单。");
@@ -193,19 +253,10 @@ function renderLibrary() {
 
   const fragment = document.createDocumentFragment();
   filtered.forEach((entry) => {
-    const node = els.libraryCardTemplate.content.firstElementChild.cloneNode(true);
-    node.querySelector("img").src = getPosterUrl(entry.posterPath);
-    node.querySelector("img").alt = entry.title;
-    node.querySelector("h3").textContent = entry.title;
-    node.querySelector(".meta-line").textContent = formatMeta(entry);
-    node.querySelector(".overview").textContent = entry.overview;
-    node.querySelector(".tag-row").append(
-      createTag(entry.mediaType === "movie" ? "电影" : "电视剧", true),
-      createTag(resolveStatusLabel(entry.status)),
-      ...entry.genres.slice(0, 3).map((genre) => createTag(genre))
-    );
-    node.querySelector(".remove-btn").addEventListener("click", () => removeEntry(entry.id));
-    node.querySelector(".progress-block").append(renderProgressBlock(entry));
+    const node =
+      state.viewMode === "compact" && !state.expandedEntries.has(entry.id)
+        ? renderCompactLibraryCard(entry)
+        : renderDetailedLibraryCard(entry);
     fragment.append(node);
   });
 
@@ -227,6 +278,78 @@ function renderStats(entries) {
 
 function renderProgressBlock(entry) {
   return entry.mediaType === "movie" ? renderMovieProgress(entry) : renderTvProgress(entry);
+}
+
+function renderDetailedLibraryCard(entry) {
+  const node = els.libraryCardTemplate.content.firstElementChild.cloneNode(true);
+  node.querySelector("img").src = getPosterUrl(entry.posterPath);
+  node.querySelector("img").alt = entry.title;
+  node.querySelector("h3").textContent = entry.title;
+  node.querySelector(".meta-line").textContent = formatMeta(entry);
+  node.querySelector(".overview").textContent = entry.overview;
+  node.querySelector(".tag-row").append(
+    createTag(entry.mediaType === "movie" ? "电影" : "电视剧", true),
+    createTag(resolveStatusLabel(entry.status)),
+    ...entry.genres.slice(0, 3).map((genre) => createTag(genre))
+  );
+  node.querySelector(".remove-btn").addEventListener("click", () => removeEntry(entry.id));
+  node.querySelector(".progress-block").append(renderProgressBlock(entry));
+  if (state.viewMode === "compact") {
+    const summary = node.querySelector(".library-summary");
+    const collapseBtn = document.createElement("button");
+    collapseBtn.className = "ghost-btn";
+    collapseBtn.textContent = "收起";
+    collapseBtn.addEventListener("click", () => {
+      state.expandedEntries.delete(entry.id);
+      renderLibrary();
+    });
+    summary.append(collapseBtn);
+  }
+  return node;
+}
+
+function renderCompactLibraryCard(entry) {
+  const node = document.createElement("article");
+  node.className = "library-card compact-card";
+
+  const row = document.createElement("div");
+  row.className = "compact-row";
+
+  const title = document.createElement("h3");
+  title.className = "compact-title";
+  title.textContent = entry.title;
+
+  const progress = document.createElement("p");
+  progress.className = "meta-line compact-progress";
+  progress.textContent = getCompactProgressText(entry);
+
+  const actionGroup = document.createElement("div");
+  actionGroup.className = "compact-actions";
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.className = `secondary-btn${isCompactCompleted(entry) ? " active" : ""}`;
+  toggleBtn.textContent = isCompactCompleted(entry) ? "标记未完成" : "标记完成";
+  toggleBtn.addEventListener("click", async () => {
+    await toggleCompactCompletion(entry);
+  });
+
+  const removeBtn = document.createElement("button");
+  removeBtn.className = "ghost-btn";
+  removeBtn.textContent = "删除";
+  removeBtn.addEventListener("click", () => removeEntry(entry.id));
+
+  const expandBtn = document.createElement("button");
+  expandBtn.className = "ghost-btn";
+  expandBtn.textContent = "展开";
+  expandBtn.addEventListener("click", () => {
+    state.expandedEntries.add(entry.id);
+    renderLibrary();
+  });
+
+  actionGroup.append(toggleBtn, expandBtn, removeBtn);
+  row.append(title, progress, actionGroup);
+  node.append(row);
+  return node;
 }
 
 function renderMovieProgress(entry) {
@@ -376,16 +499,40 @@ async function removeEntry(entryId) {
   try {
     await apiRequest(`/api/entries/${entryId}`, { method: "DELETE" });
     state.entries = state.entries.filter((entry) => entry.id !== entryId);
+    state.expandedEntries.delete(entryId);
     renderLibrary();
   } catch (error) {
     setSearchMessage(error.message || "删除失败。");
   }
 }
 
+async function toggleCompactCompletion(entry) {
+  if (entry.mediaType === "movie") {
+    const completed = entry.status === "completed";
+    await updateEntry(entry.id, {
+      kind: "movie_progress",
+      status: completed ? "planned" : "completed",
+      percent: completed ? 0 : 100,
+    });
+    return;
+  }
+
+  const totals = getTvTotals(entry);
+  await updateEntry(entry.id, {
+    kind: "toggle_all",
+    watched: totals.percent !== 100,
+  });
+}
+
 function matchesFilters(entry) {
+  const titleMatch =
+    !state.filters.title || entry.title.toLowerCase().includes(state.filters.title);
   const typeMatch = state.filters.type === "all" || entry.mediaType === state.filters.type;
+  const countries = getEntryCountryOptions(entry);
+  const countryMatch =
+    state.filters.country === "all" || countries.includes(state.filters.country);
   const statusMatch = state.filters.status === "all" || entry.status === state.filters.status;
-  return typeMatch && statusMatch;
+  return titleMatch && typeMatch && countryMatch && statusMatch;
 }
 
 function getTvTotals(entry) {
@@ -408,7 +555,7 @@ function formatMeta(entry) {
       ? `${entry.runtimeMinutes || "未知"} 分钟`
       : `${entry.seasons.length} 季 / ${getTvTotals(entry).totalEpisodes} 集`;
 
-  return `${entry.country} · ${entry.releaseYear} · ${runtimeLabel}`;
+  return `${formatCountries(entry)} · ${entry.releaseYear} · ${runtimeLabel}`;
 }
 
 function resolveStatusLabel(status) {
@@ -419,6 +566,46 @@ function resolveStatusLabel(status) {
       completed: "已完成",
     }[status] || "想看"
   );
+}
+
+function getCompactProgressText(entry) {
+  if (entry.mediaType === "movie") {
+    const percent = Number(entry.progress?.percent || 0);
+    return `进度 ${percent}%`;
+  }
+  const totals = getTvTotals(entry);
+  return `进度 ${totals.percent}% · ${totals.watchedEpisodes}/${totals.totalEpisodes} 集`;
+}
+
+function isCompactCompleted(entry) {
+  return entry.status === "completed";
+}
+
+function updateCountryFilterOptions() {
+  const countries = Array.from(
+    new Set(
+      state.entries.flatMap((entry) => getEntryCountryOptions(entry)).filter(Boolean)
+    )
+  ).sort((left, right) => left.localeCompare(right, "zh-CN"));
+
+  if (state.filters.country !== "all" && !countries.includes(state.filters.country)) {
+    state.filters.country = "all";
+  }
+
+  const fragment = document.createDocumentFragment();
+  fragment.append(new Option("全部国家", "all"));
+  countries.forEach((country) => {
+    fragment.append(new Option(country, country));
+  });
+  els.countryFilter.replaceChildren(fragment);
+  els.countryFilter.value = state.filters.country;
+}
+
+function getEntryCountryOptions(entry) {
+  return String(formatCountries(entry) || "")
+    .split(" / ")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function createTag(text, strong = false) {
@@ -460,6 +647,98 @@ function resolveTokenStatusText() {
     return "当前使用服务端环境变量 TMDB_TOKEN。";
   }
   return "当前未配置 Token。请在启动服务时设置 TMDB_TOKEN。";
+}
+
+function resolveSearchItemType(item) {
+  if (item.media_type === "movie" || item.media_type === "tv") {
+    return item.media_type;
+  }
+  if (item.title) {
+    return "movie";
+  }
+  if (item.name) {
+    return "tv";
+  }
+  return "";
+}
+
+function hasEntryInLibrary(tmdbId, mediaType) {
+  return state.entries.some((entry) => entry.tmdbId === tmdbId && entry.mediaType === mediaType);
+}
+
+function getSearchDisplayTitle(item) {
+  if (state.metadataLanguage === "dynamic") {
+    return item.original_title || item.original_name || item.title || item.name || "未命名";
+  }
+  return item.title || item.name || item.original_title || item.original_name || "未命名";
+}
+
+function resolveSearchLanguage() {
+  return state.metadataLanguage === "dynamic" ? "" : state.metadataLanguage;
+}
+
+function resolveEntryLanguage(item) {
+  if (state.metadataLanguage !== "dynamic") {
+    return state.metadataLanguage;
+  }
+  return normalizeLanguageTag(item.original_language || "");
+}
+
+function buildLanguageQuery(language) {
+  return language ? `&language=${encodeURIComponent(language)}` : "";
+}
+
+function normalizeLanguageTag(language) {
+  const value = String(language || "").trim().toLowerCase();
+  return (
+    {
+      zh: "zh-CN",
+      en: "en-US",
+      ja: "ja-JP",
+      ko: "ko-KR",
+      fr: "fr-FR",
+      de: "de-DE",
+      es: "es-ES",
+      pt: "pt-PT",
+      it: "it-IT",
+    }[value] || value
+  );
+}
+
+function formatCountries(entry) {
+  if (!Array.isArray(entry.countryCodes) || !entry.countryCodes.length) {
+    return entry.country || "未知";
+  }
+
+  try {
+    const display = new Intl.DisplayNames([entry.metadataLanguage || "zh-CN"], { type: "region" });
+    const names = entry.countryCodes.map((code) => display.of(code)).filter(Boolean);
+    return names.length ? names.join(" / ") : entry.country || "未知";
+  } catch {
+    return entry.country || "未知";
+  }
+}
+
+function updateLanguageHelp() {
+  els.languageHelp.textContent =
+    state.metadataLanguage === "dynamic"
+      ? "动态模式会在加入片单时按每个条目的原生语言拉取元数据。"
+      : `新加入的条目会使用 ${resolveLanguageLabel(state.metadataLanguage)} 拉取元数据。`;
+}
+
+function resolveLanguageLabel(language) {
+  return (
+    {
+      "zh-CN": "中文",
+      "en-US": "English",
+      "ja-JP": "日本語",
+      "ko-KR": "한국어",
+      "fr-FR": "Français",
+      "de-DE": "Deutsch",
+      "es-ES": "Español",
+      dynamic: "动态（原生语言）",
+    }[language] || language
+  );
 }
 
 async function apiGet(url) {

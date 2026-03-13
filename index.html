@@ -21,6 +21,9 @@
           <p class="hero-copy">
             记录电影和电视剧的观看状态，自动拉取元信息，并对电视剧按季按集追踪。
           </p>
+          <p class="helper-text">
+            <a href="./bulk-import.html">打开批量导入页面</a>
+          </p>
         </div>
         <section class="token-panel">
           <p class="field-label">TMDB 配置</p>
@@ -31,6 +34,18 @@
             >
           </p>
           <p id="tokenStatus" class="helper-text"></p>
+          <label class="field-label" for="languagePreference">元数据语言</label>
+          <select id="languagePreference" aria-label="元数据语言">
+            <option value="zh-CN">中文</option>
+            <option value="en-US">English</option>
+            <option value="ja-JP">日本語</option>
+            <option value="ko-KR">한국어</option>
+            <option value="fr-FR">Français</option>
+            <option value="de-DE">Deutsch</option>
+            <option value="es-ES">Español</option>
+            <option value="dynamic">动态（原生语言）</option>
+          </select>
+          <p id="languageHelp" class="helper-text"></p>
           <div class="data-tools">
             <button id="exportJsonBtn" class="secondary-btn" type="button">导出 JSON</button>
             <button id="importJsonBtn" class="ghost-btn" type="button">导入 JSON</button>
@@ -47,7 +62,8 @@
               <h2>添加电影 / 电视剧</h2>
             </div>
             <div class="segmented-control" role="tablist" aria-label="媒体类型">
-              <button class="segment active" data-media-type="movie">电影</button>
+              <button class="segment active" data-media-type="all">全部</button>
+              <button class="segment" data-media-type="movie">电影</button>
               <button class="segment" data-media-type="tv">电视剧</button>
             </div>
           </div>
@@ -56,7 +72,7 @@
             <input
               id="searchInput"
               type="search"
-              placeholder="输入片名搜索"
+              placeholder="输入片名或剧名搜索"
               autocomplete="off"
               required
             />
@@ -73,17 +89,31 @@
               <p class="eyebrow">Library</p>
               <h2>我的片单</h2>
             </div>
-            <div class="filters">
+            <div class="filters library-filters">
+              <input
+                id="titleFilter"
+                type="search"
+                placeholder="按标题关键词过滤"
+                autocomplete="off"
+                aria-label="按标题关键词过滤"
+              />
               <select id="typeFilter" aria-label="按类型筛选">
                 <option value="all">全部类型</option>
                 <option value="movie">电影</option>
                 <option value="tv">电视剧</option>
+              </select>
+              <select id="countryFilter" aria-label="按国家筛选">
+                <option value="all">全部国家</option>
               </select>
               <select id="statusFilter" aria-label="按状态筛选">
                 <option value="all">全部状态</option>
                 <option value="planned">想看</option>
                 <option value="in_progress">进行中</option>
                 <option value="completed">已完成</option>
+              </select>
+              <select id="viewMode" aria-label="片单展示模式">
+                <option value="detailed">详细模式</option>
+                <option value="compact">简洁模式</option>
               </select>
             </div>
           </div>

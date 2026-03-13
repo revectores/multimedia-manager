@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>批量导入 | 观影进展面板</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Bulk Import</p>
+          <h1>批量导入片单</h1>
+          <p class="hero-copy">
+            每行输入一个电影或电视剧原生语言标题。系统会按标题严格匹配 TMDB，并自动加入片单。
+          </p>
+          <p class="helper-text">
+            <a href="./index.html">返回主页面</a>
+          </p>
+        </div>
+        <section class="token-panel">
+          <p class="field-label">运行状态</p>
+          <p id="bulkTokenStatus" class="helper-text"></p>
+          <div class="bulk-stats" id="bulkStats"></div>
+        </section>
+      </header>
+
+      <main class="main-grid bulk-grid">
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Input</p>
+              <h2>原生语言标题列表</h2>
+            </div>
+          </div>
+          <textarea
+            id="bulkInput"
+            class="bulk-textarea"
+            placeholder="例如：&#10;Inception&#10;开端&#10;PERSON of INTEREST"
+          ></textarea>
+          <label class="field-label" for="bulkMode">匹配模式</label>
+          <select id="bulkMode" aria-label="匹配模式">
+            <option value="exact">严格匹配</option>
+            <option value="fuzzy">模糊匹配</option>
+          </select>
+          <p id="bulkModeHelp" class="helper-text"></p>
+          <div class="bulk-actions">
+            <button id="bulkStartBtn" class="primary-btn" type="button">开始导入</button>
+            <button id="bulkClearBtn" class="ghost-btn" type="button">清空</button>
+          </div>
+          <div id="bulkMessage" class="status-line"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Result</p>
+              <h2>匹配结果</h2>
+            </div>
+          </div>
+          <div class="progress-meter">
+            <div id="bulkProgressBar" class="progress-meter-bar"></div>
+          </div>
+          <div id="bulkSummary" class="library-stats"></div>
+          <div class="bulk-columns">
+            <div>
+              <p class="field-label">成功</p>
+              <div id="bulkSuccessList" class="bulk-result-list"></div>
+            </div>
+            <div>
+              <p class="field-label">失败</p>
+              <div id="bulkFailureList" class="bulk-result-list"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./bulk-import.js"></script>
+  </body>
+</html>
