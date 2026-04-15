@@ -11,12 +11,13 @@ from urllib import error, parse, request
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "app.db"
+_ICLOUD_DB = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/database/multimedia-manager/app.db"
+DB_PATH = Path(os.environ.get("MULTIMEDIA_DB_PATH", str(_ICLOUD_DB)))
 TMDB_BASE = "https://api.themoviedb.org/3"
 
 
 def connect_db():
-    DATA_DIR.mkdir(exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     return connection
@@ -969,7 +970,7 @@ class AppHandler(SimpleHTTPRequestHandler):
 
 def main():
     init_db()
-    port = int(os.environ.get("PORT", "8010"))
+    port = int(os.environ.get("PORT", "8000"))
     server = ThreadingHTTPServer(("127.0.0.1", port), AppHandler)
     print(f"Serving on http://127.0.0.1:{port}")
     try:
